@@ -167,19 +167,20 @@ control SwitchIngress(
                 // 下一阶段是否需要处理的标识
                 ig_md.carried = false;
             } else {
-                S1.S1_no_vote_array.write(ig_md.arrayIndex, noVote + 1);
-                // 如果此时反对票超过了赞成票的一倍，就执行处理:
-                TODO
-                // 1. 交换 flowID
-                flow_ID_t temp = ig_md.keyCarried;
-                ig_md.keyCarried = S1_flow_ID_array.read(ig_md.arrayIndex);
-                S1_flow_ID_array.write(ig_md.arrayIndex, temp);
-                // 2. 把原来的赞成票放到 ig_md 中进入下一阶段， 
-                ig_md.countCarried = S1_yes_vote_array.read(ig_md.arrayIndex);
-                // 3. 把原来的反对票当作新的赞成票，新的反对票置 0
-                S1_yes_vote_array.write(ig_md.arrayIndex, noVote);
-                S1_no_vote_array.write(ig_md.arrIndex, 0);
-                // *****问题：溢出怎么办？？？
+                S1_no_vote_array.write(ig_md.arrayIndex, noVote + 1);
+                // 如果此时反对票超过了赞成票的二倍，就执行处理:
+                if (noVote + 1 >= yesVote * 2) {
+                    // 1. 交换 flowID
+                    flow_ID_t temp = ig_md.keyCarried;
+                    ig_md.keyCarried = S1_flow_ID_array.read(ig_md.arrayIndex);
+                    S1_flow_ID_array.write(ig_md.arrayIndex, temp);
+                    // 2. 把原来的赞成票放到 ig_md 中进入下一阶段， 
+                    ig_md.countCarried = yesVote;
+                    // 3. 把原来的反对票当作新的赞成票，新的反对票置 0
+                    S1_yes_vote_array.write(ig_md.arrayIndex, noVote);
+                    S1_no_vote_array.write(ig_md.arrIndex, 0);
+                    // *****问题：溢出怎么办？？？
+                }
             }
         }
     }
@@ -191,10 +192,104 @@ control SwitchIngress(
             exit;
         }
         // 可以生成新的 index，也可以使用原来的
+        // 如果 index 处的 key 是空的，将key放进去
+        flow_ID_t keyRead = S2_flow_ID_array.read(ig_md.arrayIndex);
+        if (keyRead == 0) {
+            // 空条目，直接放入
+            S2_flow_ID_array.write(ig_md.arrayIndex, ig_md.keyCarried);
+        } else {
+            // 条目不空
+            // 读取 stage2 中对应位置的 key 与计数值，如果 key 一样，就增加赞成票的计数，否则增加反对票的计数
+            bit<16> yesVote = S2_yes_vote_array.read(ig_md.arrayIndex);
+            bit<16> noVote = S2_no_vote_array.read(ig_md.arrayIndex);
+
+            if (ig_md.keyCarried == S2_flow_ID_array.read(ig_md.arrayIndex)) {
+                S2_yes_vote_array.write(ig_md.arrayIndex, yesVote + 1);
+                // 如果赞成票超过 1<<16 的一半，认为其是当前时间段内的 HH 流 ====== 有待商榷
+                if (yesVote >= (1 << 15)) {
+                    // 当前包需要sendCPU() 
+                    TODO
+                    // 将赞成票与反对票减半，防止此流依然是HH流
+                    S2_yes_vote_array.write(ig_md.arrayIndex, yesVote >> 1);
+                    S2_no_vote_array.write(ig_md.arrayIndex, noVote >> 1);
+                }
+                // 下一阶段是否需要处理的标识
+                ig_md.carried = false;
+            } else {
+                // 携带的 key 与读到的 key 不一样，增加 反对票
+                S2_no_vote_array.write(ig_md.arrayIndex, noVote + 1);
+                // 如果此时反对票超过了赞成票的一倍，就执行处理:
+                if (noVote + 1 >= yesVote * 2) {
+                    // 1. 交换 flowID
+                    flow_ID_t temp = ig_md.keyCarried;
+                    ig_md.keyCarried = keyRead;
+                    S2_flow_ID_array.write(ig_md.arrayIndex, temp);
+                    // 2. 把原来的赞成票放到 ig_md 中进入下一阶段， 
+                    ig_md.countCarried = S2_yes_vote_array.read(ig_md.arrayIndex);
+                    // 3. 把原来的反对票当作新的赞成票，新的反对票置 0
+                    S2_yes_vote_array.write(ig_md.arrayIndex, noVote);
+                    S2_no_vote_array.write(ig_md.arrIndex, 0);
+                    // *****问题：溢出怎么办？？？
+                }
+            }
+        }
+    }
+
+    // stage3 的 action
+    action doStage3() {
+        // 如果 carried 是 false, 说明没有携带数据进来，直接放行
+        if (ig_md.carried == false) {
+            exit;
+        }
+        // 可以生成新的 index，也可以使用原来的
+        // 如果 index 处的 key 是空的，将key放进去
+        flow_ID_t keyRead = S3_flow_ID_array.read(ig_md.arrayIndex);
+        if (keyRead == 0) {
+            // 空条目，直接放入
+            S3_flow_ID_array.write(ig_md.arrayIndex, ig_md.keyCarried);
+        } else {
+            // 条目不空
+            // 读取 stage3 中对应位置的 key 与计数值，如果 key 一样，就增加赞成票的计数，否则增加反对票的计数
+            bit<16> yesVote = S3_yes_vote_array.read(ig_md.arrayIndex);
+            bit<16> noVote = S3_no_vote_array.read(ig_md.arrayIndex);
+
+            if (ig_md.keyCarried == S3_flow_ID_array.read(ig_md.arrayIndex)) {
+                S3_yes_vote_array.write(ig_md.arrayIndex, yesVote + 1);
+                // 如果赞成票超过 1<<16 的一半，认为其是当前时间段内的 HH 流 ====== 有待商榷
+                if (yesVote >= (1 << 15)) {
+                    // 当前包需要sendCPU() 
+                    TODO
+                    // 将赞成票与反对票减半，防止此流依然是HH流
+                    S3_yes_vote_array.write(ig_md.arrayIndex, yesVote >> 1);
+                    S3_no_vote_array.write(ig_md.arrayIndex, noVote >> 1);
+                }
+                // 下一阶段是否需要处理的标识
+                ig_md.carried = false;
+            } else {
+                // 携带的 key 与读到的 key 不一样，增加 反对票
+                S3_no_vote_array.write(ig_md.arrayIndex, noVote + 1);
+                // 如果此时反对票超过了赞成票的一倍，就执行处理:
+                if (noVote + 1 >= yesVote * 2) {
+                    // 1. 交换 flowID
+                    flow_ID_t temp = ig_md.keyCarried;
+                    ig_md.keyCarried = keyRead;
+                    S3_flow_ID_array.write(ig_md.arrayIndex, temp);
+                    // 2. 把原来的赞成票放到 ig_md 中进入下一阶段， 
+                    ig_md.countCarried = S3_yes_vote_array.read(ig_md.arrayIndex);
+                    // 3. 把原来的反对票当作新的赞成票，新的反对票置 0
+                    S3_yes_vote_array.write(ig_md.arrayIndex, noVote);
+                    S3_no_vote_array.write(ig_md.arrIndex, 0);
+                    // *****问题：溢出怎么办？？？
+                }
+            }
+        }
     }
 
 
     // table TODO
+    table votepipe {
+        
+    }
 
     // apply TODO
 } // control SwitchIngress
@@ -257,10 +352,10 @@ control EmptyEgressDeparser(
 /****** P I P E L I N E ********/
 
 Pipeline(SwitchIngressParser(),
-         SwitchIngress(),
-         SwitchIngressDeparser(),
-         EmptyEgressParser(),
-         EmptyEgress(),
-         EmptyEgressDeparser()) pipe;
+            SwitchIngress(),
+            SwitchIngressDeparser(),
+            EmptyEgressParser(),
+            EmptyEgress(),
+            EmptyEgressDeparser()) pipe;
 
 Switch(pipe) main;
